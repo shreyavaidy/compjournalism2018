@@ -1,0 +1,1026 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Homework: Fair prediction\n",
+    "\n",
+    "In this homework you will build a logistic regression classifier on the Machine Bias data, then tune it to get equal false positive rates between black and white defendants."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Submitted By: \n",
+    "Name - Shreya Vaidyanathan; \n",
+    "UNI - sv2525"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Part 0. Loading the data and building the feature matrix.\n",
+    "Free code, copied from our class notebook."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "from sklearn.linear_model import LogisticRegression\n",
+    "from sklearn import tree\n",
+    "from sklearn import metrics\n",
+    "%matplotlib inline"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# Select between data on overall arrests and arrests for violent crimes\n",
+    "# This allows quick comparisons of the difference between these two data sets\n",
+    "violent = False\n",
+    "\n",
+    "if violent:\n",
+    "    fname ='compas-scores-two-years-violent.csv'\n",
+    "    decile_col = 'v_decile_score'\n",
+    "    score_col = 'v_score_text'\n",
+    "else:\n",
+    "    fname ='compas-scores-two-years.csv'\n",
+    "    decile_col = 'decile_score'\n",
+    "    score_col = 'score_text'\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "cv = pd.read_csv(fname)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(5278, 53)"
+      ]
+     },
+     "execution_count": 4,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Data cleaning ala ProPublica\n",
+    "cv = cv[\n",
+    "    (cv.days_b_screening_arrest <= 30) &  \n",
+    "    (cv.days_b_screening_arrest >= -30) &  \n",
+    "    (cv.is_recid != -1) &\n",
+    "    (cv.c_charge_degree != 'O') &\n",
+    "    (cv[score_col] != 'N/A')\n",
+    "]\n",
+    "\n",
+    "# Keep only black and white races for this analysis\n",
+    "cv = cv[(cv.race == 'African-American') | (cv.race=='Caucasian')]\n",
+    "         \n",
+    "# renumber the rows from 0 again\n",
+    "cv.reset_index(inplace=True, drop=True) \n",
+    "cv.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# build up dummy variables for age, race, gender\n",
+    "features = pd.concat(\n",
+    "    [pd.get_dummies(cv.age_cat, prefix='age'),\n",
+    "     pd.get_dummies(cv.sex, prefix='sex'),\n",
+    "     pd.get_dummies(cv.c_charge_degree, prefix='degree'), # felony or misdemeanor charge ('f' or 'm')\n",
+    "     cv.priors_count],\n",
+    "    axis=1)\n",
+    "\n",
+    "# We should have one less dummy variable than the number of categories, to avoid the \"dummy variable trap\"\n",
+    "# See https://www.quora.com/When-do-I-fall-in-the-dummy-variable-trap\n",
+    "features.drop(['age_25 - 45', 'sex_Female', 'degree_M'], axis=1, inplace=True)\n",
+    "\n",
+    "# Try to predict whether someone is re-arrested\n",
+    "target = cv.two_year_recid"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th>score_text</th>\n",
+       "      <th>High</th>\n",
+       "      <th>Low</th>\n",
+       "      <th>Medium</th>\n",
+       "      <th>High risk rate</th>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>race</th>\n",
+       "      <th></th>\n",
+       "      <th></th>\n",
+       "      <th></th>\n",
+       "      <th></th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>African-American</th>\n",
+       "      <td>845</td>\n",
+       "      <td>1346</td>\n",
+       "      <td>984</td>\n",
+       "      <td>0.266142</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>Caucasian</th>\n",
+       "      <td>223</td>\n",
+       "      <td>1407</td>\n",
+       "      <td>473</td>\n",
+       "      <td>0.106039</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "score_text        High   Low  Medium  High risk rate\n",
+       "race                                                \n",
+       "African-American   845  1346     984        0.266142\n",
+       "Caucasian          223  1407     473        0.106039"
+      ]
+     },
+     "execution_count": 6,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# COMPAS text score value counts\n",
+    "# cv[decile_col].value_counts()\n",
+    "# high risk rates by race\n",
+    "score_race = pd.crosstab(cv.race, cv[score_col])\n",
+    "score_race['High risk rate'] = score_race['High'] / score_race.sum(axis=1)\n",
+    "score_race"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th>score_text</th>\n",
+       "      <th>High</th>\n",
+       "      <th>Low</th>\n",
+       "      <th>Medium</th>\n",
+       "      <th>High risk rate</th>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>sex</th>\n",
+       "      <th></th>\n",
+       "      <th></th>\n",
+       "      <th></th>\n",
+       "      <th></th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>Female</th>\n",
+       "      <td>148</td>\n",
+       "      <td>575</td>\n",
+       "      <td>308</td>\n",
+       "      <td>0.143550</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>Male</th>\n",
+       "      <td>920</td>\n",
+       "      <td>2178</td>\n",
+       "      <td>1149</td>\n",
+       "      <td>0.216623</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "score_text  High   Low  Medium  High risk rate\n",
+       "sex                                           \n",
+       "Female       148   575     308        0.143550\n",
+       "Male         920  2178    1149        0.216623"
+      ]
+     },
+     "execution_count": 7,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# high risk rates by sex\n",
+    "score_sex = pd.crosstab(cv.sex, cv[score_col])\n",
+    "score_sex['High risk rate'] = score_sex['High'] / score_sex.sum(axis=1)\n",
+    "score_sex"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Part 1. Your basic logistic regression\n",
+    "\n",
+    "Fit a logistic regression to this data. Print out the accuracy, PPV, and FPV overall, and for just black vs. white defendants. \n",
+    "\n",
+    "Most of the code you need can be found in the class notebook."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "LogisticRegression(C=1.0, class_weight=None, dual=False, fit_intercept=True,\n",
+       "          intercept_scaling=1, max_iter=100, multi_class='ovr', n_jobs=1,\n",
+       "          penalty='l2', random_state=None, solver='liblinear', tol=0.0001,\n",
+       "          verbose=0, warm_start=False)"
+      ]
+     },
+     "execution_count": 8,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Fit a logistic regression\n",
+    "x = features.values                #Feature vectors\n",
+    "y = target.values                  #Labels  \n",
+    "lr = LogisticRegression()          #Logistic regression initialization   \n",
+    "lr.fit(x,y)                        #Fit the LR to the data"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "This is a logistic regression, so the coefficients are odds ratios (after undoing the logarithm.) Let's look at them to see what weights it used to make its predictions."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>age_Greater than 45</th>\n",
+       "      <th>age_Less than 25</th>\n",
+       "      <th>sex_Male</th>\n",
+       "      <th>degree_F</th>\n",
+       "      <th>priors_count</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>0.488937</td>\n",
+       "      <td>2.091818</td>\n",
+       "      <td>1.417314</td>\n",
+       "      <td>1.210107</td>\n",
+       "      <td>1.179172</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   age_Greater than 45  age_Less than 25  sex_Male  degree_F  priors_count\n",
+       "0             0.488937          2.091818  1.417314  1.210107      1.179172"
+      ]
+     },
+     "execution_count": 9,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Predict the result on the training data\n",
+    "# Examine regression coefficients\n",
+    "\n",
+    "coeffs = pd.DataFrame(np.exp(lr.coef_), columns=features.columns)\n",
+    "coeffs"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style>\n",
+       "    .dataframe thead tr:only-child th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: left;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th>actual</th>\n",
+       "      <th>False</th>\n",
+       "      <th>True</th>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>guessed</th>\n",
+       "      <th></th>\n",
+       "      <th></th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>False</th>\n",
+       "      <td>2076</td>\n",
+       "      <td>1047</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>True</th>\n",
+       "      <td>719</td>\n",
+       "      <td>1436</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "actual   False  True \n",
+       "guessed              \n",
+       "False     2076   1047\n",
+       "True       719   1436"
+      ]
+     },
+     "execution_count": 10,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Crosstab for our predictive model\n",
+    "y_pred = lr.predict(x)\n",
+    "guessed=pd.Series(y_pred)==1\n",
+    "\n",
+    "actual=cv.two_year_recid==1\n",
+    "\n",
+    "cm = pd.crosstab(guessed, actual, rownames=['guessed'], colnames=['actual'])\n",
+    "cm  #for \"confusion matrix\""
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# Free code for you!\n",
+    "\n",
+    "# cm is a confusion matrix. The rows are guessed, the columns are actual \n",
+    "def print_ppv_fpv(cm):\n",
+    "    # the indices here are [col][row] or [actual][guessed]\n",
+    "    TN = cm[False][False]   \n",
+    "    TP = cm[True][True]\n",
+    "    FN = cm[True][False]\n",
+    "    FP = cm[False][True]\n",
+    "    print('Accuracy: ', (TN+TP)/(TN+TP+FN+FP))\n",
+    "    print('PPV: ', TP / (TP + FP))\n",
+    "    print('FPR: ', FP / (FP + TN))\n",
+    "    print('FNR: ', FN / (FN + TP))\n",
+    "    print()\n",
+    "\n",
+    "def print_metrics(guessed, actual):\n",
+    "    cm = pd.crosstab(guessed, actual, rownames=['guessed'], colnames=['actual'])\n",
+    "    print(cm)\n",
+    "    print()\n",
+    "    print_ppv_fpv(cm)    \n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 12,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Accuracy:  0.665403561955\n",
+      "PPV:  0.666357308585\n",
+      "FPR:  0.257245080501\n",
+      "FNR:  0.421667337898\n",
+      "\n",
+      "White\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1061    493\n",
+      "True       220    329\n",
+      "\n",
+      "Accuracy:  0.660960532573\n",
+      "PPV:  0.59927140255\n",
+      "FPR:  0.171740827479\n",
+      "FNR:  0.599756690998\n",
+      "\n",
+      "Black\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1015    554\n",
+      "True       499   1107\n",
+      "\n",
+      "Accuracy:  0.668346456693\n",
+      "PPV:  0.689290161893\n",
+      "FPR:  0.329590488771\n",
+      "FNR:  0.333534015653\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Print out the accuracy, PPV, FPV, FNV for\n",
+    "#  - everyone \n",
+    "#  - just white defendants\n",
+    "#  - just black defendants\n",
+    "print_ppv_fpv(cm)\n",
+    "print('White')\n",
+    "jwd = cv.race == 'Caucasian'\n",
+    "print_metrics(guessed[jwd], actual[jwd])\n",
+    "\n",
+    "print('Black')\n",
+    "jbd = cv.race == 'African-American'\n",
+    "print_metrics(guessed[jbd], actual[jbd])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# jbd  #use_b variable for "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Part 2. Equalizing false positive rates\n",
+    "Now you'll build your own classifier that equalizes the false positive rates between white and non-white defendants. There are many ways to do this. We're going to use race explicitly to set a different threshold for white and black defendants. \n",
+    "\n",
+    "To begin with, we are going to write our own prediction function, starting with this one:"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 14,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# This takes a trained LogisticRegression, a set of features, and a threshold\n",
+    "# Predicts true wherever the regression gives a probability > threshold\n",
+    "\n",
+    "# Note: returns a numpy array, not a dataframe\n",
+    "\n",
+    "def predict_threshold(classifier, features, threshold):\n",
+    "    # predict_proba returns two columns: probability of true, and probability of false\n",
+    "    # [:,1] selects the second column\n",
+    "    return classifier.predict_proba(features)[:,1] > threshold"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 15,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# This is the same as lr.predict(x) when we use a threshold of 0.5\n",
+    "guessed2 = predict_threshold(lr, x, 0.5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# predict_threshold(lr, x, 0.2)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Now adapt this function so it takes two thresholds `a_threshold` and `b_threshold`, and a column of values `use_b` which means use the `b_threshold` for any row where it's true. The idea is to allow us to adjust the thresholds independently on two different groups."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 17,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Write a function which takes the following arguments\n",
+    "def predict_threshold_groups(classifier, feautes, a_threshold, b_threshold, use_b):\n",
+    "    # calculate probabilities from our classifier\n",
+    "    \n",
+    "    # Create one Series which is True where the probabilities are bigger than a_threshold, \n",
+    "    # and another for b_threshold\n",
+    "    # Then combine them, selecting values from either Series according to use_b\n",
+    "    df_pa = predict_threshold(lr, x, a_threshold)\n",
+    "    df_pb = predict_threshold(lr, x, b_threshold)\n",
+    "    \n",
+    "    final_df = []\n",
+    "    for i in range(0,len(use_b)):\n",
+    "        if(use_b[i] == True):\n",
+    "            final_df.append(df_pb[i])\n",
+    "        else:\n",
+    "            final_df.append(df_pa[i])\n",
+    "            \n",
+    "    return final_df"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Now use this function with different thresholds for black and white defendants. Print out the confusion martrix, accuracy, FPV, and PPV for the results -- again, overall and for each race."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 27,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      "Everyone\n",
+      "Accuracy:  0.665403561955\n",
+      "PPV:  0.666357308585\n",
+      "FPR:  0.257245080501\n",
+      "FNR:  0.421667337898\n",
+      "\n",
+      "White\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1061    493\n",
+      "True       220    329\n",
+      "\n",
+      "Accuracy:  0.660960532573\n",
+      "PPV:  0.59927140255\n",
+      "FPR:  0.171740827479\n",
+      "FNR:  0.599756690998\n",
+      "\n",
+      "Black\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1015    554\n",
+      "True       499   1107\n",
+      "\n",
+      "Accuracy:  0.668346456693\n",
+      "PPV:  0.689290161893\n",
+      "FPR:  0.329590488771\n",
+      "FNR:  0.333534015653\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Predict recidivism with different thresholds for black and white\n",
+    "# Print out metrics for everyone, black, and white\n",
+    "\n",
+    "# print_metrics(guessed, actual)\n",
+    "print(\"\\n\")\n",
+    "pred_res = predict_threshold_groups(lr, x, 0.5, 0.5, jbd)\n",
+    "# print(pred_res)\n",
+    "\n",
+    "guessed3 = pd.Series(pred_res)==1\n",
+    "actual = cv.two_year_recid==1\n",
+    "    \n",
+    "print(\"Everyone\")\n",
+    "cm = pd.crosstab(guessed3, actual, rownames=['guessed'], colnames=['actual'])\n",
+    "# print(cm)\n",
+    "\n",
+    "print_ppv_fpv(cm)\n",
+    "print('White')\n",
+    "white = cv.race == 'Caucasian'\n",
+    "print_metrics(guessed3[white], actual[white])\n",
+    "\n",
+    "print('Black')\n",
+    "black = cv.race == 'African-American'\n",
+    "print_metrics(guessed3[black], actual[black])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 63,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      "Everyone\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     2311   1424\n",
+      "True       484   1059\n",
+      "Accuracy:  0.638499431603\n",
+      "PPV:  0.686325340246\n",
+      "FPR:  0.173166368515\n",
+      "FNR:  0.573499798631\n",
+      "\n",
+      "White\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1013    451\n",
+      "True       268    371\n",
+      "\n",
+      "Accuracy:  0.658107465525\n",
+      "PPV:  0.580594679186\n",
+      "FPR:  0.209211553474\n",
+      "FNR:  0.548661800487\n",
+      "\n",
+      "Black\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1298    973\n",
+      "True       216    688\n",
+      "\n",
+      "Accuracy:  0.625511811024\n",
+      "PPV:  0.761061946903\n",
+      "FPR:  0.142668428005\n",
+      "FNR:  0.585791691752\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Predict recidivism with different thresholds for black and white\n",
+    "# Print out metrics for everyone, black, and white\n",
+    "\n",
+    "# print_metrics(guessed, actual)\n",
+    "print(\"\\n\")\n",
+    "pred_res = predict_threshold_groups(lr, x, 0.48, 0.6, jbd)\n",
+    "# print(pred_res)\n",
+    "\n",
+    "guessed3 = pd.Series(pred_res)==1\n",
+    "actual = cv.two_year_recid==1\n",
+    "    \n",
+    "print(\"Everyone\")\n",
+    "cm = pd.crosstab(guessed3, actual, rownames=['guessed'], colnames=['actual'])\n",
+    "print(cm)\n",
+    "\n",
+    "print_ppv_fpv(cm)\n",
+    "print('White')\n",
+    "white = cv.race == 'Caucasian'\n",
+    "print_metrics(guessed3[white], actual[white])\n",
+    "\n",
+    "print('Black')\n",
+    "black = cv.race == 'African-American'\n",
+    "print_metrics(guessed3[black], actual[black])"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Tune the thresholds so the False Positive Rate is the same for white and black defendants.\n",
+    "- What did you change to achieve this?\n",
+    "- What effect does this have on the overall accuracy, FPR, FNR, and PPV?\n",
+    "- What effect does this have on the PPV for white and black?\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 60,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Everyone\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     2319   1366\n",
+      "True       476   1117\n",
+      "Accuracy:  0.651004168246\n",
+      "PPV:  0.701192718142\n",
+      "FPR:  0.17030411449\n",
+      "FNR:  0.550140958518\n",
+      "\n",
+      "White\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1075    499\n",
+      "True       206    323\n",
+      "\n",
+      "Accuracy:  0.664764621969\n",
+      "PPV:  0.610586011342\n",
+      "FPR:  0.16081186573\n",
+      "FNR:  0.607055961071\n",
+      "\n",
+      "Black\n",
+      "actual   False  True \n",
+      "guessed              \n",
+      "False     1244    867\n",
+      "True       270    794\n",
+      "\n",
+      "Accuracy:  0.64188976378\n",
+      "PPV:  0.746240601504\n",
+      "FPR:  0.178335535007\n",
+      "FNR:  0.521974714028\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "#(your answer here)\n",
+    "pred_res = predict_threshold_groups(lr, x, 0.515, 0.585, jbd)\n",
+    "# print(pred_res)\n",
+    "\n",
+    "guessed3 = pd.Series(pred_res)==1\n",
+    "actual = cv.two_year_recid==1\n",
+    "    \n",
+    "print(\"Everyone\")\n",
+    "cm = pd.crosstab(guessed3, actual, rownames=['guessed'], colnames=['actual'])\n",
+    "print(cm)\n",
+    "\n",
+    "print_ppv_fpv(cm)\n",
+    "print('White')\n",
+    "white = cv.race == 'Caucasian'\n",
+    "print_metrics(guessed3[white], actual[white])\n",
+    "\n",
+    "print('Black')\n",
+    "black = cv.race == 'African-American'\n",
+    "print_metrics(guessed3[black], actual[black])"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "(your answer here)\n",
+    "\n",
+    "#### 1. Change to achieve this :\n",
+    "\n",
+    "I changed the values given to the function 'predict_threshold_groups(classifier, feautes, a_threshold, b_threshold, use_b)' and adjusted the threshold values for each race group in order to identify some point where the FPR was equal in both cases.\n",
+    "    \n",
+    "I tried playing around with both 'a_threshold' and 'b_threshold' values starting with the initial '0.5' that was taken in the basic predict function and moved the values around to (0.3, 0.4), (0.5, 0.6), (0.43, 0.52) etc. with the intuition that the lesser the threshold for black people, the more likely that they will not be falsely predicted by the algorithm here. I took the approach of moving the threshold to extremes on both black and white people to see how the prediction will change. I noticed that the higher the threshold values for \n",
+    "\n",
+    "The final value I chose was - \n",
+    "pred_res = predict_threshold_groups(lr, x, 0.515, 0.585, jbd)\n",
+    "\n",
+    "An interesting thing I came across was that when I obtained nearly equal values of FPR for both the categories whenever the difference between (threshold_b - threshold_a) was around 0.8! For instance, here then its threshold_a=0.515 and threshold_b=0.585 the FPR circles around 17% and when I set it to (0.42, 0.48) the FPR was around 28-30%\n",
+    "\n",
+    "\n",
+    "#### 2. Effect it had on the overall accuracy, FPR, FNR, PPV?\n",
+    "I noticed that the smallest change in the threshold for the white category had very little change in the overall values for that category, where as the opposite was true in the case of the black category. I understand that this is due to larger amount of data being available for the white category and this help achieve more accurate or favourable results for the race class.\n",
+    "\n",
+    "The overall values of FPR, FNR an PPV moved more when the threshold_b was adjusted. \n",
+    "\n",
+    "When I changed the 'threshold_b' to be higher than 0.6, I found that the FPR was very low and FNR shot up -- meaning that when I set a higher threshold, more people were let go easily. This is not ideal so I pulled back. \n",
+    "\n",
+    "\n",
+    "#### 3. What effect does this have on the PPV for white and black ?\n",
+    "PPV is directly proportionally to threshold. It measures how precise the predictions are and we can observe that the PPV values are lesser when the threshold is set to be higher for the categories. When we push the PPV to be more high by raising the threshold for one class, the FNR also increases which is not an ideal trade off (as seen above)\n",
+    "\n",
+    "So the essential question of where to set the bar for making this prediction is still very tricky and must factor several other things that are involved in the system. "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Bonus: Predicting race and the impossibility of blinding\n",
+    "So far we've excluded race as a predictive variable, hoping that this would make the results unbiased. But is race encoded in the other data points? To find out, alter the regression above to try to predict race from the other demographic and criminal history variables.\n",
+    "\n",
+    "How accurately can you predict race just on these factors alone?"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 20,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# Use cross validation and the classifier of your choice to see how well you can predict race\n",
+    "from sklearn.model_selection import cross_val_score"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Let's compare this accuracy to just guessing one race all the time. Which race is more common in this data and what would the accuracy be if we just always guessed that race."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 21,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "African-American    3175\n",
+       "Caucasian           2103\n",
+       "Name: race, dtype: int64"
+      ]
+     },
+     "execution_count": 21,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# What is the most common race in our arrest data?\n",
+    "# race value counts\n",
+    "cv.race.value_counts()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 22,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# What is the accuracy if we always guess the most common race?\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Based on this, how much information about race \"leaks\" into our original recidivism predictor, even if we don't give it the race variable as a feature?"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "(your answer here)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.6.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
